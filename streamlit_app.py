@@ -284,37 +284,26 @@ def make_pdf(
         except Exception:
             pass
 
-        # ---------------- TEXT (FIXED) ----------------
+        # ---------------- TEXT (FIXED, EXACT SIZE) ----------------
         text = truncate_text(qr_text, int(max_chars))
 
-        # Font metrics (ascent/descent in 1000-em units)
+        # ✅ Always use the UI font size exactly (e.g., 12pt)
+        size = float(font_size_pt)
+        c.setFont(FONT_NAME_PDF, size)
+
+        # ✅ Accurate vertical centering using font metrics (baseline correction)
         ascent_1000 = pdfmetrics.getAscent(FONT_NAME_PDF)
         descent_1000 = pdfmetrics.getDescent(FONT_NAME_PDF)  # usually negative
-        units_1000 = ascent_1000 - descent_1000
-        if units_1000 <= 0:
-            units_1000 = 1000
 
-        # ✅ Fit-to-box height (keeps your chosen font_size_pt as minimum)
-        box_h_pt = float(text_h)  # points
-        target_text_h = box_h_pt * 0.70
-        fit_size = (target_text_h * 1000.0) / units_1000
-        effective_size = max(float(font_size_pt), float(fit_size))
-
-        # ✅ Width-fit (only if too wide)
-        max_w = float(label_w) - (0.10 * inch)
-        while pdfmetrics.stringWidth(text, FONT_NAME_PDF, effective_size) > max_w and effective_size > 6:
-            effective_size -= 0.5
-
-        c.setFont(FONT_NAME_PDF, effective_size)
-
-        # ✅ Accurate vertical centering using metrics
-        ascent = (ascent_1000 * effective_size) / 1000.0
-        descent = (descent_1000 * effective_size) / 1000.0  # negative
+        ascent = (ascent_1000 * size) / 1000.0
+        descent = (descent_1000 * size) / 1000.0  # negative
         text_height = ascent - descent
-        baseline_y = y + (box_h_pt - text_height) / 2.0 - descent
+
+        # baseline = bottom + (box - textHeight)/2 - descent
+        baseline_y = y + (float(text_h) - text_height) / 2.0 - descent
 
         c.drawCentredString(x + label_w / 2, baseline_y, text)
-        # ------------------------------------------------
+        # ----------------------------------------------------------
 
     total = len(labels)
     pages = max(1, math.ceil(total / per_page)) if total else 1
