@@ -1,4 +1,4 @@
-# pages/2_QR_Label_PDF.py
+# streamlit_app.py
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))  # allow: from db import ...
@@ -14,9 +14,10 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import inch
 from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.utils import ImageReader
-from reportlab.pdfbase import pdfmetrics  # ✅ FIX: font metrics for accurate baseline centering
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
-from db import init_db, save_qr_label_set  # persistent storage
+from db import init_db, save_qr_label_set  # persistent storage (can be stubbed)
 
 st.set_page_config(page_title="QR Label PDF", layout="wide")
 st.title("🏷️ QR Label PDF Generator")
@@ -65,6 +66,29 @@ def draw_image_fit_cover_pil(base_img: Image.Image, target_w: int, target_h: int
     top = max(0, (im.height - target_h) // 2)
     im = im.crop((left, top, left + target_w, top + target_h))
     return im
+
+def register_pdf_font() -> str:
+    """
+    Times New Roman Bold (TTF) register করে PDF-এ ব্যবহার করার জন্য।
+    Streamlit Cloud এ OS font থাকে না, তাই repo-তে fonts/timesbd.ttf রাখুন।
+    """
+    base = Path(__file__).resolve().parent
+    candidates = [
+        base / "fonts" / "timesbd.ttf",                 # common name
+        base / "fonts" / "Times New Roman Bold.ttf",    # alternate name
+        base / "fonts" / "LiberationSerif-Bold.ttf",    # open fallback (Times-like)
+    ]
+
+    for fp in candidates:
+        if fp.exists():
+            font_name = "TNR_BOLD_TTF"
+            try:
+                pdfmetrics.registerFont(TTFont(font_name, str(fp)))
+                return font_name
+            except Exception:
+                continue
+
+    return "Times-Bold"  # fallback (built-in)
 
 def render_preview_first_page_jpg(
     labels,
@@ -115,7 +139,7 @@ def render_preview_first_page_jpg(
         origin_x = pad_outer_px
         origin_y = pad_outer_px
 
-    # Preview font (best-effort). PDF uses Times-Bold.
+    # Preview font (best-effort). PDF uses Times New Roman Bold TTF if present.
     try:
         font_px = max(10, int(round((font_size_pt / 72.0) * dpi)))
         font = ImageFont.truetype("timesbd.ttf", font_px)
@@ -216,7 +240,7 @@ def make_pdf(
     label_w = qr_box
     label_h = qr_box + text_h
 
-    FONT_NAME_PDF = "Times-Bold"
+    FONT_NAME_PDF = register_pdf_font()  # ✅ Times New Roman Bold TTF (if provided), else fallback
 
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=page_size)
@@ -260,19 +284,37 @@ def make_pdf(
         except Exception:
             pass
 
-        # ✅ FIX: Text at bottom (accurate vertical centering using font metrics)
-        c.setFont(FONT_NAME_PDF, int(font_size_pt))
+        # ---------------- TEXT (FIXED) ----------------
         text = truncate_text(qr_text, int(max_chars))
 
-        # Times-Bold metrics (ascent/descent) -> baseline correction
-        ascent = pdfmetrics.getAscent(FONT_NAME_PDF) * float(font_size_pt) / 1000.0
-        descent = pdfmetrics.getDescent(FONT_NAME_PDF) * float(font_size_pt) / 1000.0  # usually negative
-        text_height = ascent - descent
+        # Font metrics (ascent/descent in 1000-em units)
+        ascent_1000 = pdfmetrics.getAscent(FONT_NAME_PDF)
+        descent_1000 = pdfmetrics.getDescent(FONT_NAME_PDF)  # usually negative
+        units_1000 = ascent_1000 - descent_1000
+        if units_1000 <= 0:
+            units_1000 = 1000
 
-        # baseline = bottom + (box - textHeight)/2 - descent
-        baseline_y = y + (text_h - text_height) / 2.0 - descent
+        # ✅ Fit-to-box height (keeps your chosen font_size_pt as minimum)
+        box_h_pt = float(text_h)  # points
+        target_text_h = box_h_pt * 0.70
+        fit_size = (target_text_h * 1000.0) / units_1000
+        effective_size = max(float(font_size_pt), float(fit_size))
+
+        # ✅ Width-fit (only if too wide)
+        max_w = float(label_w) - (0.10 * inch)
+        while pdfmetrics.stringWidth(text, FONT_NAME_PDF, effective_size) > max_w and effective_size > 6:
+            effective_size -= 0.5
+
+        c.setFont(FONT_NAME_PDF, effective_size)
+
+        # ✅ Accurate vertical centering using metrics
+        ascent = (ascent_1000 * effective_size) / 1000.0
+        descent = (descent_1000 * effective_size) / 1000.0  # negative
+        text_height = ascent - descent
+        baseline_y = y + (box_h_pt - text_height) / 2.0 - descent
 
         c.drawCentredString(x + label_w / 2, baseline_y, text)
+        # ------------------------------------------------
 
     total = len(labels)
     pages = max(1, math.ceil(total / per_page)) if total else 1
