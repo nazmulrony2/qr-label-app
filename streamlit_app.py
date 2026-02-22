@@ -1,4 +1,7 @@
-# streamlit_app.py
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parents[1]))  # allow: from db import ...
+
 import io
 import math
 import json
@@ -11,12 +14,16 @@ from reportlab.lib.units import inch
 from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.utils import ImageReader
 
+from db import init_db, save_qr_label_set  # persistent storage (stubbed in Streamlit Cloud)
+
 st.set_page_config(page_title="QR Label PDF", layout="wide")
 st.title("🏷️ QR Label PDF Generator")
 
+init_db()
+
 st.write(
     "Upload multiple **PNG** QR codes and set the QR text. "
-    "Adjust layout settings, see a **JPG preview**, generate PDF, and download it."
+    "Adjust layout settings, see a **JPG preview**, generate PDF, and **save the set** for later."
 )
 
 files = st.file_uploader("Upload QR PNG images", type=["png"], accept_multiple_files=True)
@@ -80,7 +87,7 @@ def render_preview_first_page_jpg(
 
     cols, rows, per_page = compute_layout(page_size, margin_pt, gap_pt, label_w_pt, label_h_pt)
 
-    def pt_to_px(pt: float) -> int:
+    def pt_to_px(pt):
         return int(round((pt / 72.0) * dpi))
 
     label_w_px = pt_to_px(label_w_pt)
@@ -221,16 +228,18 @@ def make_pdf(
         # Outer label border
         c.rect(x, y, label_w, label_h, stroke=1, fill=0)
 
-        # QR box border at TOP
+        # QR box border at TOP (same width as label)
         if show_inner_qr_border:
             c.rect(x, y + text_h, label_w, qr_box, stroke=1, fill=0)
 
         # --- CUT GUIDE LINE (below QR box) ---
-        c.setLineWidth(float(border_pt) * 0.6)
+        c.setLineWidth(float(border_pt) * 0.6)  # slightly thinner
         c.line(x, y + text_h, x + label_w, y + text_h)
+
+        # Restore border width
         c.setLineWidth(float(border_pt))
 
-        # QR image with padding
+        # QR image with padding (inside the top box)
         try:
             img = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
             img_reader = ImageReader(img)
@@ -285,50 +294,52 @@ if not files:
     st.info("Upload one or more PNG QR images to continue.")
     st.stop()
 
-# --- QR text editor ---
+# --- QR text editor (TOP) ---
 initial = []
 for f in files:
     base = f.name.rsplit(".", 1)[0]
     initial.append({"file_name": f.name, "qr_text": f"QR:{base}"})
 
 df = pd.DataFrame(initial)
+
 st.subheader("QR text for each image (editable)")
 edited = st.data_editor(df, use_container_width=True, num_rows="fixed")
 
-# -------- Layout Settings --------
+# -------- Layout Settings (BELOW editor) --------
 st.subheader("Layout Settings")
 
+# Default values YOU provided
 c1, c2, c3, c4 = st.columns(4)
 with c1:
-    page_size_name = st.selectbox("Page size", ["A4", "Letter"], index=0)
+    page_size_name = st.selectbox("Page size", ["A4", "Letter"], index=0, key="ps")
 with c2:
-    page_margin_in = st.number_input("Page margin (inch)", min_value=0.0, max_value=2.0, value=0.40, step=0.05)
+    page_margin_in = st.number_input("Page margin (inch)", min_value=0.0, max_value=2.0, value=0.40, step=0.05, key="pm")
 with c3:
-    label_gap_in = st.number_input("Gap between labels (inch)", min_value=0.0, max_value=1.5, value=0.25, step=0.05)
+    label_gap_in = st.number_input("Gap between labels (inch)", min_value=0.0, max_value=1.5, value=0.25, step=0.05, key="lg")
 with c4:
-    preview_dpi = st.number_input("Preview DPI", min_value=100, max_value=400, value=200, step=25)
+    preview_dpi = st.number_input("Preview DPI", min_value=100, max_value=400, value=200, step=25, key="dpi")
 
 c5, c6, c7, c8 = st.columns(4)
 with c5:
-    qr_box_in = st.number_input("QR box size (inch)", min_value=0.5, max_value=3.0, value=1.25, step=0.05)
+    qr_box_in = st.number_input("QR box size (inch)", min_value=0.5, max_value=3.0, value=1.25, step=0.05, key="qb")
 with c6:
-    text_box_in = st.number_input("Text box height (inch)", min_value=0.10, max_value=1.0, value=0.24, step=0.01)
+    text_box_in = st.number_input("Text box height (inch)", min_value=0.10, max_value=1.0, value=0.24, step=0.01, key="tb")
 with c7:
-    img_pad_in = st.number_input("Image padding inside QR box (inch)", min_value=0.0, max_value=0.5, value=0.05, step=0.01)
+    img_pad_in = st.number_input("Image padding inside QR box (inch)", min_value=0.0, max_value=0.5, value=0.05, step=0.01, key="ip")
 with c8:
-    font_size_pt = st.number_input("Font size (pt)", min_value=6, max_value=40, value=12, step=1)
+    font_size_pt = st.number_input("Font size (pt)", min_value=6, max_value=40, value=12, step=1, key="fs")
 
 c9, c10, c11, c12 = st.columns(4)
 with c9:
-    border_pt = st.number_input("Border thickness (pt)", min_value=0.5, max_value=6.0, value=1.50, step=0.5)
+    border_pt = st.number_input("Border thickness (pt)", min_value=0.5, max_value=6.0, value=1.50, step=0.5, key="bt")
 with c10:
-    show_inner_qr_border = st.checkbox("Show inner QR box border", value=True)
+    show_inner_qr_border = st.checkbox("Show inner QR box border", value=True, key="iqb")
 with c11:
-    max_chars = st.number_input("Max text characters (truncate)", min_value=8, max_value=60, value=22, step=1)
+    max_chars = st.number_input("Max text characters (truncate)", min_value=8, max_value=60, value=22, step=1, key="mc")
 with c12:
-    use_full_page_preview = st.checkbox("Preview full page (slower)", value=False)
+    use_full_page_preview = st.checkbox("Preview full page (slower)", value=False, key="fp")
 
-# Build labels from edited table
+# Build labels from edited table (keep file order)
 file_map = {f.name: f for f in files}
 labels = []
 for _, row in edited.iterrows():
@@ -339,7 +350,7 @@ for _, row in edited.iterrows():
 
 page_size = A4 if page_size_name == "A4" else letter
 
-# ---------------- Generate PDF ----------------
+# ---------------- Generate PDF (and KEEP bytes after rerun) ----------------
 st.subheader("Generate PDF")
 
 if "last_pdf_bytes" not in st.session_state:
@@ -367,6 +378,7 @@ if st.button("Generate PDF"):
         st.session_state.last_pdf_bytes = None
         st.error(f"PDF generation failed: {e}")
 
+# Always show download if available
 if st.session_state.last_pdf_bytes:
     st.download_button(
         "Download QR Labels PDF",
@@ -374,6 +386,48 @@ if st.session_state.last_pdf_bytes:
         file_name="qr_labels.pdf",
         mime="application/pdf",
     )
+
+# ---------------- Save Label Set (PERSISTENT) ----------------
+st.subheader("Save this QR Label Set (store for later use)")
+
+set_col1, set_col2 = st.columns([2, 1])
+with set_col1:
+    set_name = st.text_input("Set name", value="My QR Labels")
+with set_col2:
+    save_set = st.button("Save Label Set")
+
+settings = {
+    "page_size": page_size_name,
+    "page_margin_in": float(page_margin_in),
+    "label_gap_in": float(label_gap_in),
+    "preview_dpi": int(preview_dpi),
+    "qr_box_in": float(qr_box_in),
+    "text_box_in": float(text_box_in),
+    "img_pad_in": float(img_pad_in),
+    "font_size_pt": int(font_size_pt),
+    "border_pt": float(border_pt),
+    "max_chars": int(max_chars),
+    "show_inner_qr_border": bool(show_inner_qr_border),
+    "use_full_page_preview": bool(use_full_page_preview),
+}
+
+if save_set:
+    try:
+        items = []
+        for f, lab in zip(files, labels):
+            items.append({
+                "file_name": f.name,
+                "qr_text": lab["qr_text"],
+                "image_png_bytes": f.getvalue(),
+            })
+        set_id = save_qr_label_set(
+            set_name=set_name.strip() or "My QR Labels",
+            settings_json=json.dumps(settings),
+            items=items
+        )
+        st.success(f"Saved Label Set to database. Set ID = {set_id}")
+    except Exception as e:
+        st.error(f"Failed to save label set: {e}")
 
 # ---------------- JPG Preview ----------------
 st.subheader("JPG Preview (before generating PDF) — First page")
